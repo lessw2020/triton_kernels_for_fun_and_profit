@@ -1,6 +1,10 @@
-# Meta copyright here
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
 
 # ---- Fused Softmax written in Triton ------
+# credits:
+# Triton Softmax Tutorial
+# LucidRains Triton_Transformers
 
 import torch
 import triton
