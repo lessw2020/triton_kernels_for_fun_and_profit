@@ -2,7 +2,7 @@
 # All rights reserved.
 
 # ---- Fused Softmax written in Triton ------
-# credits:
+# Extra Credits:
 # Triton Softmax Tutorial
 # LucidRains Triton_Transformers
 
