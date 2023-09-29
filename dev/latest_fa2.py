@@ -506,7 +506,33 @@ class _attention(torch.autograd.Function):
 
 attention = _attention.apply
 
+z,h,n_ctx,d_head = (1,2, 256, 16)
+q = torch.randn((z,h,n_ctx, d_head), dtype=torch.float16, device='cuda')
+k = torch.randn_like(q) # ((z,h,n_ctx, d_head),device='cuda')
+v = torch.randn_like(k) # ((z,h,n_ctx, d_head),device='cuda')
+causal=True
+sm_scale = 1.0
 
+res = attention(q,k, v, causal, sm_scale)
+M = torch.tril(torch.ones((n_ctx, n_ctx), device="cuda"))
+p = torch.matmul(q, k.transpose(2, 3)) * sm_scale
+if causal:
+    p[:, :, M == 0] = float("-inf")
+
+p = torch.softmax(p.float(), dim=-1).half()
+    # p = torch.exp(p)
+ref_out = torch.matmul(p, v)
+
+
+print(f"verifying output vs reference:")
+torch.testing.assert_close(res, ref_out, atol=1e-2, rtol=0)
+
+
+
+
+
+
+'''
 @pytest.mark.parametrize("Z, H, N_CTX, D_HEAD", [(1, 2, 1024, 64)])
 @pytest.mark.parametrize("causal", [True])
 def test_op(Z, H, N_CTX, D_HEAD, causal, dtype=torch.float16):
@@ -625,3 +651,4 @@ def bench_flash_attention(
 
 # only works on post-Ampere GPUs right now
 bench_flash_attention.run(save_path=".", print_data=True)
+'''

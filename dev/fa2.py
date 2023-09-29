@@ -20,6 +20,7 @@ import triton
 import triton.language as tl
 
 @triton.jit
+
 def _attn_fwd_inner(
     accum, l_i, m_i, q,
     K_block_ptr, V_block_ptr,
@@ -31,8 +32,46 @@ def _attn_fwd_inner(
     offs_m: tl.constexpr,
     offs_n: tl.constexpr,
 ):
-    pass
+    if stage==1:
+        low= 0
+        high = start_m * block_m
+    else:
+        low = start_m * block_m
+        high = (start_m+1) * block_m
+        low = tl.multiple_of(low, block_m) # compiler opt
+    
+    K_block_ptr = tl.advance(K_block_ptr, (0,low))
+    V_block_ptr = tl.advance(V_block_ptr, (low,0))
 
+    # loop KV and update accumulator
+    for start_n in range(low, high, block_n):
+        start_n = tl.multiple_of(start_n, block_n)
+        # qk
+        k = tl.load(K_block_ptr)
+        qk = tl.zeros([block_m, block_n], dtype=tl.float32)
+        qk += tl.dot(q,k)
+
+        if stage==2:
+            mask = offs_m[:,None] >= (start_n + offs_n[None,:])
+            qk = qk * qk_scale + tl.where(mask, 0, -1.0e6)
+            m_ij = tl.maximum(m_i, tl.max(qk,axis=1))
+            qk -= m_ij[:,None]
+        else:
+            m_ij = tl.maximum(m_i, tl.max(qk,axis=1) * qk_scale)
+            qk = qk * qk_scale - m_ij[:,None]
+        probs = tl.math.exp2(qk)
+        l_ij = tl.sum(probs, axis=1)
+
+        delta = tl.math.exp2(m_i - m_ij)
+        l_i = l_i * delta + l_ij
+        # update accum
+        accum = accum * delta[:,None]
+        v = tl.load(V_block_ptr)
+        accum+= tl.dot(probs.to(tl.float16), v)
+        m_i = m_ij
+        V_block_ptr = tl.advance(V_block_ptr, (block_n,0))
+        K_block_ptr = tl.advance(K_block_ptr, (0, block_n))
+    return accum, l_i, m_i
 
 
 @triton.jit
@@ -80,7 +119,7 @@ def _attn_fwd(
     V_block_ptr = tl.make_block_ptr(
         base = V + qkv_offset,
         shape = (n_ctx, block_dmodel),
-        strides = (stride_vk, stride_kn),
+        strides = (stride_vk, stride_vn),
         offsets = (0,0),
         block_shape = (block_n, block_dmodel),
         order=(1,0),
@@ -114,10 +153,27 @@ def _attn_fwd(
         accum, l_i, m_i = _attn_fwd_inner(
             accum, l_i, m_i, q, K_block_ptr, V_block_ptr,
             start_m, qk_scale, 
-            block_m, block_dmodel, block_n=block_n, 
-            stage=1, offs_m=offs_m, offs_n = offs_n,
+            block_m, block_dmodel, block_n, 
+            1, offs_m, offs_n,
+        )
+    tl.debug_barrier()
+
+    if stage & 2:
+        accum, l_i, m_i = _attn_fwd_inner(
+            accum, l_i, m_i, q, K_block_ptr, V_block_ptr,
+            start_m, qk_scale,
+            block_m, block_dmodel, block_n, 
+            2, offs_m, offs_n,
         )
 
+    # wrap up
+    m_i += tl.math.log2(l_i)
+    accum = accum / l_i[:,None]
+    m_ptrs = M + off_hz * n_ctx + offs_m
+
+    # back to SRAM
+    tl.store(m_ptrs, m_i)
+    tl.store(O_block_ptr, accum.to(Out.type.element_ty))
 
 
 class _attention(torch.autograd.Function):
@@ -174,10 +230,25 @@ attention = _attention.apply
 
 
 z,h,n_ctx,d_head = (1,2, 256, 16)
-q = torch.randn((z,h,n_ctx, d_head), device='cuda')
-k = torch.randn((z,h,n_ctx, d_head),device='cuda')
-v = torch.randn((z,h,n_ctx, d_head),device='cuda')
+q = torch.randn((z,h,n_ctx, d_head), dtype=torch.float16, device='cuda')
+k = torch.randn_like(q) # ((z,h,n_ctx, d_head),device='cuda')
+v = torch.randn_like(k) # ((z,h,n_ctx, d_head),device='cuda')
 causal=True
 sm_scale = 0.5
 
 res = attention(q,k,v, causal, sm_scale)
+
+M = torch.tril(torch.ones((n_ctx, n_ctx), device="cuda"))
+p = torch.matmul(q, k.transpose(2, 3)) * sm_scale
+if causal:
+    p[:, :, M == 0] = float("-inf")
+
+p = torch.softmax(p.float(), dim=-1).half()
+    # p = torch.exp(p)
+ref_out = torch.matmul(p, v)
+
+
+print(f"verifying output vs reference:")
+torch.testing.assert_close(res, ref_out,atol=1e-2, rtol=0)
+
+
