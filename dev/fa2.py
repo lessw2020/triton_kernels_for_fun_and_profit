@@ -52,6 +52,17 @@ def _attn_fwd(
         order=(1,0),
     )
 
+    K_block_ptr = tl.make_block_ptr(
+        base = K + qkv_offset,
+        shape = (block_dmodel, n_ctx), # d, N  (transposed)
+        strides = (stride_kk, stride_kn),
+        offsets = (0,0),
+        block_shape = (block_dmodel, block_n),
+        order = (0,1),
+    )
+
+    
+
 
 
 class _attention(torch.autograd.Function):
