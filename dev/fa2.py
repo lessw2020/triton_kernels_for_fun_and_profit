@@ -20,6 +20,22 @@ import triton
 import triton.language as tl
 
 @triton.jit
+def _attn_fwd_inner(
+    accum, l_i, m_i, q,
+    K_block_ptr, V_block_ptr,
+    start_m, qk_scale,
+    block_m: tl.constexpr,
+    block_dmodel: tl.constexpr,
+    block_n: tl.constexpr,
+    stage: tl.constexpr,
+    offs_m: tl.constexpr,
+    offs_n: tl.constexpr,
+):
+    pass
+
+
+
+@triton.jit
 def _attn_fwd(
     Q,K,V, sm_scale, M, Out,
     stride_qz, stride_qh, stride_qm, stride_qk,
@@ -78,6 +94,30 @@ def _attn_fwd(
         block_shape = (block_m, block_dmodel),
         order=(1,0),
     )
+
+    # offsets
+    offs_m = start_m * block_m + tl.arange(0,block_m)
+    offs_n = tl.arange(0,block_n)
+
+    # m and l
+    m_i = tl.zeros([block_m], dtype=tl.float32) - float("inf")
+    l_i = tl.zeros([block_m], dtype=tl.float32) + 1.0
+    accum = tl.zeros([block_m, block_dmodel], dtype=tl.float32)
+
+    qk_scale = sm_scale
+    qk_scale *= 1.44269504 # 1/log(2)
+
+    # load q - stays in SRAM 
+    q = tl.load(Q_block_ptr)
+    # stage 1 - off-band (?)
+    if stage & 1:
+        accum, l_i, m_i = _attn_fwd_inner(
+            accum, l_i, m_i, q, K_block_ptr, V_block_ptr,
+            start_m, qk_scale, 
+            block_m, block_dmodel, block_n=block_n, 
+            stage=1, offs_m=offs_m, offs_n = offs_n,
+        )
+
 
 
 class _attention(torch.autograd.Function):
