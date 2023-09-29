@@ -35,7 +35,6 @@ def add_kernel(
     y = tl.load(y_ptr + offsets, mask=mask)
     print("pid", pid)
 
-    breakpoint()
     output = x + y
     # print("x=",x)
     # Write x + y back to DRAM.

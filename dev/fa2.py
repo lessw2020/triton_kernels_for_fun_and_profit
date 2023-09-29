@@ -27,7 +27,6 @@ def _attn_fwd(
     stride_vz, stride_vh, stride_vk, stride_vn,
     stride_oz, stride_oh, stride_om, stride_on,
     Z, H,
-    *,
     n_ctx: tl.constexpr,
     block_m: tl.constexpr,
     block_n: tl.constexpr,
@@ -35,13 +34,15 @@ def _attn_fwd(
     stage: tl.constexpr,
 ):
     start_m = tl.program_id(0)
+    
     off_hz = tl.program_id(1)
     off_z = off_hz //H  # div by batch
     off_h = off_hz % H # which head num
+    # print("offsets: ",start_m, off_z, off_h)
 
     # adjust into qkv by moving along batch and head num
     qkv_offset = off_z.to(tl.int64) * stride_qz + off_h.to(tl.int64) * stride_qh
-
+    
     Q_block_ptr = tl.make_block_ptr(
         base = Q + qkv_offset,
         shape=(n_ctx, block_dmodel), # N, d
@@ -106,10 +107,10 @@ class _attention(torch.autograd.Function):
 attention = _attention.apply
 
 
-z,h,n_ctx,d_head = (1,4, 1024, 64)
-q = torch.randn((z,h,n_ctx, d_head))
-k = torch.randn((z,h,n_ctx, d_head))
-v = torch.randn((z,h,n_ctx, d_head))
+z,h,n_ctx,d_head = (1,2, 256, 16)
+q = torch.randn((z,h,n_ctx, d_head), device='cuda')
+k = torch.randn((z,h,n_ctx, d_head),device='cuda')
+v = torch.randn((z,h,n_ctx, d_head),device='cuda')
 causal=True
 sm_scale = 0.5
 
