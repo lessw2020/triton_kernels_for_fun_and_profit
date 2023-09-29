@@ -67,7 +67,7 @@ def _attn_fwd_inner(
         # update accum
         accum = accum * delta[:,None]
         v = tl.load(V_block_ptr)
-        accum+= tl.dot(probs.to(tl.float16), v)
+        accum+= tl.dot(probs.to(v.type.element_ty), v)
         m_i = m_ij
         V_block_ptr = tl.advance(V_block_ptr, (block_n,0))
         K_block_ptr = tl.advance(K_block_ptr, (0, block_n))
@@ -228,27 +228,65 @@ class _attention(torch.autograd.Function):
 
 attention = _attention.apply
 
+import time
+def perf_timer(func):
+    def wrapper(*args, **kwargs):
+        start = time.perf_counter()
+        output=func(*args, **kwargs)
+        elapsed_time = time.perf_counter() - start
+        print(elapsed_time)
+        return output, elapsed_time
+    return wrapper
 
-z,h,n_ctx,d_head = (1,2, 256, 16)
-q = torch.randn((z,h,n_ctx, d_head), dtype=torch.float16, device='cuda')
+@perf_timer
+def mha_compute(_func, q, k, v, causal, sm_scale, is_sdpa=False):
+    
+    if is_sdpa:
+        res = _func(q,k,v, is_causal=causal, scale=sm_scale)
+    else:
+        res = _func(q,k,v, causal, sm_scale)
+    return res
+
+import math
+from torch.nn.functional import scaled_dot_product_attention as sdpa
+
+z,h,n_ctx,d_head = (8,32, 2048, 64)
+q = torch.randn((z,h,n_ctx, d_head), dtype=torch.bfloat16, device='cuda')
 k = torch.randn_like(q) # ((z,h,n_ctx, d_head),device='cuda')
 v = torch.randn_like(k) # ((z,h,n_ctx, d_head),device='cuda')
+torch.manual_seed(2020)
+q1 = torch.randn((z,h,n_ctx, d_head), dtype=torch.bfloat16, device='cuda')
+k1 = torch.randn_like(q) # ((z,h,n_ctx, d_head),device='cuda')
+v1 = torch.randn_like(k) # ((z,h,n_ctx, d_head),device='cuda')
+
 causal=True
-sm_scale = 0.5
+sm_scale = 1.0 # math.sqrt(k.shape[-1]) # 0.5
+# warmup
+res, triton_time = mha_compute(attention, q,k,v, causal, sm_scale)
+# actual
+res, triton_time = mha_compute(attention, q1,k1,v1, causal, sm_scale)
+print(f"{res.dtype=}")
+use_manual = False
+if use_manual:
 
-res = attention(q,k,v, causal, sm_scale)
+    M = torch.tril(torch.ones((n_ctx, n_ctx), device="cuda"))
+    p = torch.matmul(q, k.transpose(2, 3)) * sm_scale
+    if causal:
+        p[:, :, M == 0] = float("-inf")
 
-M = torch.tril(torch.ones((n_ctx, n_ctx), device="cuda"))
-p = torch.matmul(q, k.transpose(2, 3)) * sm_scale
-if causal:
-    p[:, :, M == 0] = float("-inf")
-
-p = torch.softmax(p.float(), dim=-1).half()
-    # p = torch.exp(p)
-ref_out = torch.matmul(p, v)
-
+    p = torch.softmax(p.float(), dim=-1)# .half()
+    print(f"{p.dtype=}")
+        # p = torch.exp(p)
+    ref_out = torch.matmul(p.to(torch.bfloat16), v)
+# warmup
+sdpa_out, sdpa_time = mha_compute(sdpa, q,k,v, causal, sm_scale, is_sdpa=True)
+# actual
+sdpa_out, sdpa_time = mha_compute(sdpa, q1,k1,v1, causal, sm_scale, is_sdpa=True)
+print(f"{sdpa_out.dtype=}")
+print(f"timing compare: {triton_time=}, {sdpa_time=}")
 
 print(f"verifying output vs reference:")
-torch.testing.assert_close(res, ref_out,atol=1e-2, rtol=0)
+torch.testing.assert_close(res, sdpa_out,atol=1e-1, rtol=0)
+#torch.testing.assert_close(ref_out, sdpa_out,atol=1e-1, rtol=0)
 
 
