@@ -22,7 +22,7 @@ import triton.language as tl
 @triton.jit
 
 def _attn_fwd_inner(
-    accum, l_i, m_i, q,
+    accum, l_i, m_i, q, am,
     K_block_ptr, V_block_ptr,
     start_m, qk_scale,
     block_m: tl.constexpr,
@@ -49,11 +49,25 @@ def _attn_fwd_inner(
         # qk
         k = tl.load(K_block_ptr)
         qk = tl.zeros([block_m, block_n], dtype=tl.float32)
+        alibi = tl.zeros([block_m, block_n], dtype=tl.float32)*am*999
+        distance_bias_matrix = -tl.abs(
+            tl.arange(0,block_m) - tl.arange(0,block_m)[:,None]
+        )
+        
+        # print("block m, block n", block_m, block_n)
         qk += tl.dot(q,k)
-
+        #print(f"{qk.shape=}")
         if stage==2:
             mask = offs_m[:,None] >= (start_n + offs_n[None,:])
-            qk = qk * qk_scale + tl.where(mask, 0, -1.0e6)
+            #print(mask[0])
+            #print(f"{mask.shape=}")
+            # qk += am
+            #print("am", am)
+            #am*=999
+            #qk = qk * qk_scale + tl.where(mask, 0, -1.0e6)
+            qk += alibi # tl.where(mask, am, 0)
+            qk = qk * qk_scale #+ tl.where(mask, 0, -1.0e6)
+
             m_ij = tl.maximum(m_i, tl.max(qk,axis=1))
             qk -= m_ij[:,None]
         else:
@@ -76,7 +90,7 @@ def _attn_fwd_inner(
 
 @triton.jit
 def _attn_fwd(
-    Q,K,V, sm_scale, M, Out,
+    Q,K,V, sm_scale, M, amask, Out,
     stride_qz, stride_qh, stride_qm, stride_qk,
     stride_kz, stride_kh, stride_kn, stride_kk,
     stride_vz, stride_vh, stride_vk, stride_vn,
@@ -93,11 +107,11 @@ def _attn_fwd(
     off_hz = tl.program_id(1)
     off_z = off_hz //H  # div by batch
     off_h = off_hz % H # which head num
-    # print("offsets: ",start_m, off_z, off_h)
+    #print("offsets z h: ", off_z, off_h)
 
     # adjust into qkv by moving along batch and head num
     qkv_offset = off_z.to(tl.int64) * stride_qz + off_h.to(tl.int64) * stride_qh
-    
+    #print("qkv_offset", qkv_offset)
     Q_block_ptr = tl.make_block_ptr(
         base = Q + qkv_offset,
         shape=(n_ctx, block_dmodel), # N, d
@@ -134,10 +148,22 @@ def _attn_fwd(
         order=(1,0),
     )
 
+    '''
+    M_block_ptr = tl.make_block_ptr(
+        base = amask, # + qkv_offset,
+        shape = (n_ctx, block_dmodel), # N, d
+        strides = (stride_qm, stride_qm),
+        offsets = (start_m * block_m, 0),
+        block_shape = (block_m, block_m), 
+        order=(1,0),
+     
+    )
+    '''
+
     # offsets
     offs_m = start_m * block_m + tl.arange(0,block_m)
     offs_n = tl.arange(0,block_n)
-
+    #print("offsets ",offs_m,offs_n)
     # m and l
     m_i = tl.zeros([block_m], dtype=tl.float32) - float("inf")
     l_i = tl.zeros([block_m], dtype=tl.float32) + 1.0
@@ -148,10 +174,12 @@ def _attn_fwd(
 
     # load q - stays in SRAM 
     q = tl.load(Q_block_ptr)
+    #am = tl.load(M_block_ptr)
+    am = 500
     # stage 1 - off-band (?)
     if stage & 1:
         accum, l_i, m_i = _attn_fwd_inner(
-            accum, l_i, m_i, q, K_block_ptr, V_block_ptr,
+            accum, l_i, m_i, q, am, K_block_ptr, V_block_ptr,
             start_m, qk_scale, 
             block_m, block_dmodel, block_n, 
             1, offs_m, offs_n,
@@ -160,7 +188,7 @@ def _attn_fwd(
 
     if stage & 2:
         accum, l_i, m_i = _attn_fwd_inner(
-            accum, l_i, m_i, q, K_block_ptr, V_block_ptr,
+            accum, l_i, m_i, q, am, K_block_ptr, V_block_ptr,
             start_m, qk_scale,
             block_m, block_dmodel, block_n, 
             2, offs_m, offs_n,
@@ -178,7 +206,7 @@ def _attn_fwd(
 
 class _attention(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, q, k, v, causal, sm_scale):
+    def forward(ctx, q, k, v, causal, sm_scale, attn_mask=None):
         Lq, Lk, Lv = q.shape[-1], k.shape[-1], v.shape[-1]
         assert Lk in {16,32,64,128}
         assert Lq == Lk and Lk==Lv
@@ -191,6 +219,7 @@ class _attention(torch.autograd.Function):
         num_warps = 4
 
         grid_rows = (triton.cdiv(q.shape[2], block_m),)
+        print("grid rows", grid_rows)
         # b, nh, seq_len, hdim
         # 4, 12
         # example: 1024 seq_len / 128 = 8 blocks
@@ -199,11 +228,14 @@ class _attention(torch.autograd.Function):
         grid = grid_rows + grid_cols
         # (8,4,1)
         M = torch.empty(q.shape[0], q.shape[1], q.shape[2], device=q.device, dtype=torch.float32)
+        amask = torch.ones((q.shape[2], q.shape[2]), dtype=q.dtype, device=q.device) * 500
+
+
         # M = 1,4,1024
         batch, num_heads, n_ctx, d_head = q.shape
 
         _attn_fwd[grid](
-            q,k,v, sm_scale, M, out,
+            q,k,v, sm_scale, M, amask, out,
             q.stride(0), q.stride(1), q.stride(2), q.stride(3),
             k.stride(0), k.stride(1), k.stride(2), k.stride(3),
             v.stride(0), v.stride(1), v.stride(2), v.stride(3),
@@ -249,8 +281,8 @@ def mha_compute(_func, q, k, v, causal, sm_scale, attn_mask = None, is_sdpa=Fals
 
 import math
 from torch.nn.functional import scaled_dot_product_attention as sdpa
-seq_len = 8192
-z,h,n_ctx,d_head = (32,32, seq_len, 128)
+seq_len = 16
+z,h,n_ctx,d_head = (1,1, seq_len, 16)
 
 q = torch.randn((z,h,n_ctx, d_head), dtype=torch.bfloat16, device='cuda')
 k = torch.randn_like(q) # ((z,h,n_ctx, d_head),device='cuda')
@@ -263,9 +295,9 @@ v1 = torch.randn_like(k) # ((z,h,n_ctx, d_head),device='cuda')
 mask = torch.ones((seq_len, seq_len), dtype=torch.bfloat16, device='cuda')
 mask *=500
 
-torch.backends.cuda.enable_flash_sdp(True) # : Enables or Disables FlashAttention.
+torch.backends.cuda.enable_flash_sdp(False) # : Enables or Disables FlashAttention.
 
-torch.backends.cuda.enable_mem_efficient_sdp(False) # : Enables or Disables Memory-Efficient Attention.
+torch.backends.cuda.enable_mem_efficient_sdp(True) # : Enables or Disables Memory-Efficient Attention.
 
 
 causal=True
@@ -288,17 +320,21 @@ if use_manual:
         # p = torch.exp(p)
     ref_out = torch.matmul(p.to(torch.bfloat16), v)
 # warmup
-causal=True
-sdpa_out, sdpa_time = mha_compute(sdpa, q,k,v, causal, sm_scale, None, is_sdpa=True)
+causal=False
+sdpa_out, sdpa_time = mha_compute(sdpa, q,k,v, causal, sm_scale, mask, is_sdpa=True)
 # actual
-sdpa_out, sdpa_time = mha_compute(sdpa, q1,k1,v1, causal, sm_scale, None, is_sdpa=True)
+sdpa_out, sdpa_time = mha_compute(sdpa, q1,k1,v1, causal, sm_scale, mask, is_sdpa=True)
 print(f"{sdpa_out.dtype=}")
 print(f"timing compare: {triton_time=}, {sdpa_time=}")
 
 print(f"verifying output vs reference:")
-print(f"{sdpa_out[0][0][0][0:10]=}")
-print(f"{triton_out[0][0][0][0:10]=}")
+print(f"{sdpa_out[0][0][0][10:20]=}")
+print(f"{triton_out[0][0][0][10:20]=}")
 
+distance_bias_matrix = -torch.abs(
+            torch.arange(0,10) - torch.arange(0,10)[:,None]
+        )
+print(f"{distance_bias_matrix[0:10]=}")
 
 #torch.testing.assert_close(res, sdpa_out,atol=1e-1, rtol=0)
 #torch.testing.assert_close(ref_out, sdpa_out,atol=1e-1, rtol=0)
