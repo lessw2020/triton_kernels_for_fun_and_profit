@@ -1,15 +1,16 @@
+import sys
+
 import pytest
 import torch
 from test_utils import assert_expected, set_rng_seed
-import sys
+
 sys.path.append('..')
 from kernels.flashalibi_algo import dynamic_distance_bias_matrix
+
 
 @pytest.fixture(autouse=True)
 def set_seed():
     set_rng_seed(2020)
-
-
 
 class TestFlashAlibiMask:
     @pytest.fixture
