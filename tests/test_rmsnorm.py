@@ -75,7 +75,7 @@ class TestRMSNorm:
         print(f"{triton_out=}")
         print(f"{expected_rms=}") # [:10,:10]
 
-        print(f"Timing: {triton_time=}, {native_rms_time=}, faster = {(triton_time-native_rms_time)/native_rms_time}")
+        print(f"Timing: {triton_time=}, {native_rms_time=}, faster = {(triton_time-native_rms_time)/native_rms_time*-100}")
 
         assert_expected(triton_out, expected_rms)
 
