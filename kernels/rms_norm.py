@@ -20,8 +20,8 @@ def _fwd_rms_kernel(
     in_ptr,
     stride_x_row,
     weight_ptr,
-    num_cols,
-    block_size,
+    num_cols: tl.constexpr,
+    block_size: tl.constexpr,
 
 ):
     row_index = tl.program_id(0)
@@ -66,8 +66,6 @@ class TritonRMSNorm(torch.autograd.Function):
         ctx: FunctionCtx,
         x: Tensor,
         weight: Tensor,
-        bias: Optional[Tensor]
-
     ):
         
         # handle batches = flatten to 2D
@@ -75,7 +73,7 @@ class TritonRMSNorm(torch.autograd.Function):
         x = x.view(-1, orig_shape[-1])
         nrows, ncols = x.shape
 
-        out = torch.empty_like(x)
+        out = torch.ones_like(x)
 
         # block sizing
 
@@ -103,13 +101,15 @@ class TritonRMSNorm(torch.autograd.Function):
             num_warps=num_warps,
         )
 
+        return out.view(*orig_shape)
+
 
 
 # export function - allows typing of inputs
 def triton_rmsnorm(
         x: Tensor,
         weight: Tensor,
-        bias: Optional[Tensor],
+        
 ):
-    return TritonRMSNorm.apply(x, weight, bias)
+    return TritonRMSNorm.apply(x, weight,)
 
