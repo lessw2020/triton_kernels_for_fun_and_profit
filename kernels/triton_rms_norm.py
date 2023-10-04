@@ -14,8 +14,42 @@ from torch.autograd.function import FunctionCtx
 
 
 @triton.jit
-def _fwd_rms_kernel():
-    pass
+def _fwd_rms_kernel(
+    out_ptr,
+    stride_out_row,
+    in_ptr,
+    stride_x_row,
+    weight,
+    num_cols,
+    block_size,
+
+):
+    row_index = tl.program_id(0)
+    in_ptr_row = in_ptr + (row_index * stride_x_row)
+    out_ptr_row = out_ptr + (row_index * stride_out_row)
+
+    mean = 0.0
+    variance = 0.0 
+    eps=1e-8  # per RMSNorm official repo
+
+    # rms_x = norm_x * d_x ** (-1. / 2)
+    # x_normed = x / (rms_x + self.eps)
+
+    for start_col in range(0, num_cols, block_size):
+        end_col = min((start_col + block_size), num_cols)
+        num_cols_in_block = end_col - start_col
+        col_offsets = start_col + tl.arange(0, block_size)
+        col_mask = col_offsets < num_cols
+        col_block = tl.load(in_ptr + col_offsets, mask = col_mask, other=0.0).to(tl.float32)
+        variance += tl.sum(col_block * col_block, axis=0) 
+    
+    variance /= num_cols
+    rstdev = 1/ tl.sqrt(variance + eps)
+
+
+
+
+    
 
 class TritonRMSNorm(torch.autograd.Function):
     @staticmethod
@@ -51,6 +85,7 @@ class TritonRMSNorm(torch.autograd.Function):
         grid = (nrows,) # parallelize along rows
         _fwd_rms_kernel[grid](
             out_ptr=out,
+            stride_out_row = out.stride(0),
             in_ptr = x,
             stride_x_row=x.stride(0),
             weight=weight,
