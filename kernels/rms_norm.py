@@ -72,7 +72,9 @@ class TritonRMSNorm(torch.autograd.Function):
         # handle batches = flatten to 2D
         orig_shape = x.shape
         x = x.view(-1, orig_shape[-1])
+        
         nrows, ncols = x.shape
+
 
         out = torch.ones_like(x)
 
