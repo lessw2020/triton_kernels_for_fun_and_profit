@@ -35,11 +35,11 @@ def _fwd_rms_kernel(
 
     # rms_x = norm_x * d_x ** (-1. / 2)
     # x_normed = x / (rms_x + self.eps)
-    print("num cols ", num_cols)
+    #print("num cols ", num_cols)
     for start_col in range(0, num_cols, block_size):
         col_offsets = start_col + tl.arange(0, block_size)
         col_mask = col_offsets < num_cols
-        col_block = tl.load(in_ptr + col_offsets, mask = col_mask, other=0.0).to(tl.float32)
+        col_block = tl.load(in_ptr_row + col_offsets, mask = col_mask, other=0.0).to(tl.float32)
 
         variance += tl.sum(col_block * col_block, axis=0) 
     
@@ -52,12 +52,12 @@ def _fwd_rms_kernel(
         col_mask = col_offsets < num_cols
         weights = tl.load(weight_ptr + col_offsets, mask = col_mask)
 
-        in_block = tl.load(in_ptr + col_offsets, mask=col_mask, other=0.0, eviction_policy='evict_first').to(tl.float32)
+        in_block = tl.load(in_ptr_row + col_offsets, mask=col_mask, other=0.0, eviction_policy='evict_first').to(tl.float32)
         col_block_rms = in_block * rstdev
         out = weights * col_block_rms
 
         # write to HBM
-        tl.store(out_ptr + col_offsets, out, mask = col_mask)
+        tl.store(out_ptr_row + col_offsets, out, mask = col_mask)
 
 
 

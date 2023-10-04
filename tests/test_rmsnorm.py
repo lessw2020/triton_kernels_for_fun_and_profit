@@ -40,11 +40,12 @@ class TorchMM_RMSNorm(nn.Module):
         x_normed = self._norm(x.float()).type_as(x)
         return x_normed * self.scale
     
+import time
 
 class TestRMSNorm:
     @pytest.fixture
     def N(self,):
-        return 128
+        return 1024
     
     #@gpu_test
     def test_triton_vs_pytorch_accuracy(self, N):
@@ -55,13 +56,26 @@ class TestRMSNorm:
         sample_x = torch.randn(layer_weight_size, dtype=torch.float32, device='cuda', requires_grad=False)
 
         expected_rms_func = TorchMM_RMSNorm(layer_weight_size).to('cuda')
+        start = time.perf_counter()
         expected_rms = expected_rms_func(sample_x)
+        stop = time.perf_counter()
+        native_rms_time = stop-start
         print(f"{expected_rms.shape=}")
 
+        for i in range(4):
+            triton_out = triton_rmsnorm(sample_x, weight = layer_weight)
+        start = time.perf_counter()
         triton_out = triton_rmsnorm(sample_x, weight = layer_weight)
+        stop = time.perf_counter()
+        triton_time = stop-start
+
+
+
         print(f"{triton_out.shape=}")
         print(f"{triton_out=}")
         print(f"{expected_rms=}") # [:10,:10]
+
+        print(f"Timing: {triton_time=}, {native_rms_time=}, faster = {(triton_time-native_rms_time)/native_rms_time}")
 
         assert_expected(triton_out, expected_rms)
 
