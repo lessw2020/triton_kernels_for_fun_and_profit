@@ -24,35 +24,36 @@ def _fwd_rms_kernel(
     block_size: tl.constexpr,
 
 ):
+    # get input pointers ready
     row_index = tl.program_id(0)
     in_ptr_row = in_ptr + (row_index * stride_x_row)
     out_ptr_row = out_ptr + (row_index * stride_out_row)
 
-    mean = 0.0
+    # internal variables
     variance = 0.0 
     eps=1e-8  # per RMSNorm official repo
 
     # rms_x = norm_x * d_x ** (-1. / 2)
     # x_normed = x / (rms_x + self.eps)
-
+    print("num cols ", num_cols)
     for start_col in range(0, num_cols, block_size):
-        end_col = min((start_col + block_size), num_cols)
-        num_cols_in_block = end_col - start_col
         col_offsets = start_col + tl.arange(0, block_size)
         col_mask = col_offsets < num_cols
         col_block = tl.load(in_ptr + col_offsets, mask = col_mask, other=0.0).to(tl.float32)
+
         variance += tl.sum(col_block * col_block, axis=0) 
     
     variance /= num_cols
     rstdev = 1/ tl.sqrt(variance + eps)
 
-    for col_index in range(0,num_cols, block_size):
-        col_offsets = col_index + tl.arange(0, block_size)
+    for start_col in range(0,num_cols, block_size):
+        col_offsets = start_col + tl.arange(0, block_size)
+        #print("col offsets", col_offsets)
         col_mask = col_offsets < num_cols
         weights = tl.load(weight_ptr + col_offsets, mask = col_mask)
 
-        col_block = tl.load(in_ptr + col_offsets, mask=col_mask, other=0.0, eviction_policy='evict_first').to(tl.float32)
-        col_block_rms = col_block * rstdev
+        in_block = tl.load(in_ptr + col_offsets, mask=col_mask, other=0.0, eviction_policy='evict_first').to(tl.float32)
+        col_block_rms = in_block * rstdev
         out = weights * col_block_rms
 
         # write to HBM

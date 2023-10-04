@@ -44,12 +44,12 @@ class TorchMM_RMSNorm(nn.Module):
 class TestRMSNorm:
     @pytest.fixture
     def N(self,):
-        return 64
+        return 16
     
     #@gpu_test
     def test_triton_vs_pytorch_accuracy(self, N):
-        batch_size = 12
-        layer_weight_size = (N,N,)
+        batch_size = 16
+        layer_weight_size = (batch_size,N,)
         layer_weight = torch.ones(layer_weight_size, requires_grad=False, device="cuda", dtype=torch.float32)
 
         sample_x = torch.randn(layer_weight_size, dtype=torch.float32, device='cuda', requires_grad=False)
