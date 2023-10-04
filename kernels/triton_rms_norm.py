@@ -60,11 +60,6 @@ def _fwd_rms_kernel(
 
 
 
-
-
-
-    
-
 class TritonRMSNorm(torch.autograd.Function):
     @staticmethod
     def forward(
