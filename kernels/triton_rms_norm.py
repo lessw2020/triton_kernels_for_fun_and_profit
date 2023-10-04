@@ -19,7 +19,7 @@ def _fwd_rms_kernel(
     stride_out_row,
     in_ptr,
     stride_x_row,
-    weight,
+    weight_ptr,
     num_cols,
     block_size,
 
@@ -45,6 +45,20 @@ def _fwd_rms_kernel(
     
     variance /= num_cols
     rstdev = 1/ tl.sqrt(variance + eps)
+
+    for col_index in range(0,num_cols, block_size):
+        col_offsets = col_index + tl.arange(0, block_size)
+        col_mask = col_offsets < num_cols
+        weights = tl.load(weight_ptr + col_offsets, mask = col_mask)
+
+        col_block = tl.load(in_ptr + col_offsets, mask=col_mask, other=0.0, eviction_policy='evict_first').to(tl.float32)
+        col_block_rms = col_block * rstdev
+        out = weights * col_block_rms
+
+        # write to HBM
+        tl.store(out_ptr + col_offsets, out, mask = col_mask)
+
+
 
 
 
@@ -88,15 +102,11 @@ class TritonRMSNorm(torch.autograd.Function):
             stride_out_row = out.stride(0),
             in_ptr = x,
             stride_x_row=x.stride(0),
-            weight=weight,
+            weight_ptr=weight,
             num_cols = ncols,
             block_size=block_size,
             num_warps=num_warps,
         )
-
-
-
-
 
 
 
