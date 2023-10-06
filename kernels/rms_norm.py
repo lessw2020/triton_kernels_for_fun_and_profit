@@ -67,6 +67,10 @@ def _rms_kernel_bwd_dx(
 ): 
     pass
 
+@triton.jit
+def _rms_kernel_bwd_dwdb():
+    pass
+
 class TritonRMSNorm(torch.autograd.Function):
     @staticmethod
     def forward(
@@ -84,7 +88,7 @@ class TritonRMSNorm(torch.autograd.Function):
 
         out = torch.ones_like(x)
 
-        # block sizing
+        # block sizing - credit Kernl
 
         kb_64 = 65536 
         min_block_size = 128
@@ -121,8 +125,6 @@ class TritonRMSNorm(torch.autograd.Function):
         assert dout.is_contiguous()
         
         x, weight = ctx.saved_tensors
-        N = weight.shape[0]
-
         dact = torch.empty_like(dout)
         orig_shape = x.shape
         x = x.view(-1, orig_shape[-1])
@@ -143,31 +145,30 @@ class TritonRMSNorm(torch.autograd.Function):
             block_size_cols=ctx.block_size,
             num_warps=ctx.num_warps,
         )
-        if N > 10240:
-            BLOCK_SIZE_N = 128
-            BLOCK_SIZE_M = 32
+
+        if ncols > 8192:   # kernl has 10240? 
+            block_size_col = 128
+            block_size_row = 32
             num_warps = 4
         else:
-            # maximize occupancy for small N
-            BLOCK_SIZE_N = 16
-            BLOCK_SIZE_M = 16
+            block_size_col = 16
+            block_size_row = 16
             num_warps = 8
-        grid = lambda meta: [triton.cdiv(N, meta["BLOCK_SIZE_N"])]
-        _layer_norm_bwd_dwdb[grid](
-            a,
+
+        grid = lambda meta: [triton.cdiv(ncols, meta["block_size_col"])]
+
+        _rms_kernel_bwd_dwdb[grid](
+            x,
             dout,
-            mean,
-            var,
             dweight,
-            dbias,
-            M,
-            N,
-            BLOCK_SIZE_M=BLOCK_SIZE_M,
-            BLOCK_SIZE_N=BLOCK_SIZE_N,
+            nrows,
+            ncols,
+            block_size_row=block_size_row,
+            block_size_col=block_size_col,
             num_warps=num_warps,
         )
-        # should match fw signature
-        return da, dweight, dbias, None, None, None
+        
+        return dact, dweight
 
 
 # export function - allows typing of inputs
