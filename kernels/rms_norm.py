@@ -15,9 +15,9 @@ from torch.autograd.function import FunctionCtx
 
 @triton.jit
 def _fwd_rms_kernel(
-    out_ptr,
+    out_ptr_base,
     stride_out_row,
-    in_ptr,
+    in_ptr_base,
     stride_x_row,
     weight_ptr,
     num_cols: tl.constexpr,
@@ -26,8 +26,8 @@ def _fwd_rms_kernel(
 ):
     # get input pointers ready
     row_index = tl.program_id(0)
-    in_ptr_row = in_ptr + (row_index * stride_x_row)
-    out_ptr_row = out_ptr + (row_index * stride_out_row)
+    in_ptr_row = in_ptr_base + (row_index * stride_x_row)
+    out_ptr_row = out_ptr_base + (row_index * stride_out_row)
 
     # internal variables
     variance = 0.0 
@@ -42,7 +42,9 @@ def _fwd_rms_kernel(
         col_block = tl.load(in_ptr_row + col_offsets, mask = col_mask, other=0.0).to(tl.float32)
 
         variance += tl.sum(col_block * col_block, axis=0) 
-    
+
+    #tl.debug_barrier()
+
     variance /= num_cols
     rstdev = 1/ tl.sqrt(variance + eps)
 
@@ -59,7 +61,11 @@ def _fwd_rms_kernel(
         # write to HBM
         tl.store(out_ptr_row + col_offsets, out, mask = col_mask)
 
+@triton.jit
+def _rms_kernel_bwd_dx(
 
+): 
+    pass
 
 class TritonRMSNorm(torch.autograd.Function):
     @staticmethod
@@ -94,9 +100,9 @@ class TritonRMSNorm(torch.autograd.Function):
 
         grid = (nrows,) # parallelize along rows
         _fwd_rms_kernel[grid](
-            out_ptr=out,
+            out_ptr_base=out,
             stride_out_row = out.stride(0),
-            in_ptr = x,
+            in_ptr_base = x,
             stride_x_row=x.stride(0),
             weight_ptr=weight,
             num_cols = ncols,
@@ -104,8 +110,64 @@ class TritonRMSNorm(torch.autograd.Function):
             num_warps=num_warps,
         )
 
+        ctx.save_for_backward(x, weight)
+        ctx.block_size = block_size
+        ctx.num_warps = num_warps
+
         return out.view(*orig_shape)
 
+    @staticmethod
+    def backward(ctx, dout,):
+        assert dout.is_contiguous()
+        
+        x, weight = ctx.saved_tensors
+        N = weight.shape[0]
+
+        dact = torch.empty_like(dout)
+        orig_shape = x.shape
+        x = x.view(-1, orig_shape[-1])
+        
+        nrows, ncols = x.shape
+        
+        dweight = torch.empty((weight.shape[0],), dtype=weight.dtype, device=weight.device)
+        grid = (nrows,)
+
+        _rms_kernel_bwd_dx[grid](
+            dact,
+            dout,
+            x,
+            weight,
+            x.stride(0),
+            nrows,
+            ncols,
+            block_size_cols=ctx.block_size,
+            num_warps=ctx.num_warps,
+        )
+        if N > 10240:
+            BLOCK_SIZE_N = 128
+            BLOCK_SIZE_M = 32
+            num_warps = 4
+        else:
+            # maximize occupancy for small N
+            BLOCK_SIZE_N = 16
+            BLOCK_SIZE_M = 16
+            num_warps = 8
+        grid = lambda meta: [triton.cdiv(N, meta["BLOCK_SIZE_N"])]
+        _layer_norm_bwd_dwdb[grid](
+            a,
+            dout,
+            mean,
+            var,
+            dweight,
+            dbias,
+            M,
+            N,
+            BLOCK_SIZE_M=BLOCK_SIZE_M,
+            BLOCK_SIZE_N=BLOCK_SIZE_N,
+            num_warps=num_warps,
+        )
+        # should match fw signature
+        return da, dweight, dbias, None, None, None
 
 
 # export function - allows typing of inputs

@@ -219,7 +219,7 @@ class _attention(torch.autograd.Function):
         num_warps = 4
 
         grid_rows = (triton.cdiv(q.shape[2], block_m),)
-        print("grid rows", grid_rows)
+        print("grid rows", grid_rows[0][0])
         # b, nh, seq_len, hdim
         # 4, 12
         # example: 1024 seq_len / 128 = 8 blocks
