@@ -19,7 +19,9 @@ def _fwd_rms_kernel(
     stride_out_row,
     in_ptr_base,
     stride_x_row,
+    stride_x_col, 
     weight_ptr,
+    num_rows: tl.constexpr,
     num_cols: tl.constexpr,
     block_size: tl.constexpr,
 
@@ -29,8 +31,14 @@ def _fwd_rms_kernel(
     in_ptr_row = in_ptr_base + (row_index * stride_x_row)
     out_ptr_row = out_ptr_base + (row_index * stride_out_row)
 
+    # Create block pointers for input 
+    in_block_ptr = tl.make_block_ptr(base=in_ptr_base, shape=(num_rows, num_cols), strides=(stride_x_row, stride_x_col),
+                                     offsets=(row_index, 0), block_shape=(1, block_size), order=(1, 0))
+    
+
     # internal variables
     variance = 0.0 
+    variance2 = tl.zeros((1,block_size), dtype=tl.float32)
     eps=1e-8  # per RMSNorm official repo
 
     # rms_x = norm_x * d_x ** (-1. / 2)
@@ -40,26 +48,34 @@ def _fwd_rms_kernel(
         col_offsets = start_col + tl.arange(0, block_size)
         col_mask = col_offsets < num_cols
         col_block = tl.load(in_ptr_row + col_offsets, mask = col_mask, other=0.0).to(tl.float32)
-
+        # Advance the block pointer to the current block
+        #in_block_ptr_offset = tl.advance(in_block_ptr, (0, block_size))
+        
+        # Load the current block
+        col_block_2 = tl.load(in_block_ptr, boundary_check=(0, 1))
+        tl.device_print("col_block load ", col_block)
+        tl.device_print("col block 2 ", col_block_2)
+        variance2 += tl.sum(col_block_2 * col_block_2, axis=0)
         variance += tl.sum(col_block * col_block, axis=0) 
-
-    #tl.debug_barrier()
-
+    tl.device_print("variance: ", variance)
+    tl.device_print("variance 2 ", variance2)
     variance /= num_cols
     rstdev = 1/ tl.sqrt(variance + eps)
-
+    '''
     for start_col in range(0,num_cols, block_size):
         col_offsets = start_col + tl.arange(0, block_size)
         #print("col offsets", col_offsets)
         col_mask = col_offsets < num_cols
         weights = tl.load(weight_ptr + col_offsets, mask = col_mask)
-
-        in_block = tl.load(in_ptr_row + col_offsets, mask=col_mask, other=0.0, eviction_policy='evict_first').to(tl.float32)
+        in_block_ptr_offset = tl.advance(in_block_ptr, (0, start_col))
+        in_block = tl.load(in_block_ptr_offset, boundary_check=(0, 1), eviction_policy='evict_first')
+        #in_block = tl.load(in_ptr_row + col_offsets, mask=col_mask, other=0.0, eviction_policy='evict_first').to(tl.float32)
         col_block_rms = in_block * rstdev
         out = weights * col_block_rms
 
         # write to HBM
         tl.store(out_ptr_row + col_offsets, out, mask = col_mask)
+    '''
 
 @triton.jit
 def _rms_kernel_bwd_dx(
@@ -99,6 +115,8 @@ class TritonRMSNorm(torch.autograd.Function):
         block_size = max(block_size, min_block_size)
         block_size = min(block_size, max_block_size)
 
+        print(f"Using block size {block_size=}")
+
         base_warps = max(block_size // 256, 1)
         num_warps = min(base_warps, 8)
 
@@ -108,7 +126,9 @@ class TritonRMSNorm(torch.autograd.Function):
             stride_out_row = out.stride(0),
             in_ptr_base = x,
             stride_x_row=x.stride(0),
+            stride_x_col = x.stride(1),
             weight_ptr=weight,
+            num_rows = nrows,
             num_cols = ncols,
             block_size=block_size,
             num_warps=num_warps,

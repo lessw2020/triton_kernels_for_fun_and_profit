@@ -45,7 +45,7 @@ import time
 class TestRMSNorm:
     @pytest.fixture
     def N(self,):
-        return 8192 # 16384 # 8192
+        return 32 # 16384 # 8192
     
     #@gpu_test
     def test_triton_vs_pytorch_accuracy(self, N):
@@ -62,8 +62,8 @@ class TestRMSNorm:
         native_rms_time = stop-start
         print(f"{expected_rms.shape=}")
 
-        for i in range(4):
-            triton_out = triton_rmsnorm(sample_x, weight = layer_weight)
+        #for i in range(4):
+            #triton_out = triton_rmsnorm(sample_x, weight = layer_weight)
         start = time.perf_counter()
         triton_out = triton_rmsnorm(sample_x, weight = layer_weight)
         stop = time.perf_counter()
