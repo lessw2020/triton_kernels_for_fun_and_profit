@@ -50,11 +50,11 @@ def _fwd_rms_kernel(
         variance += tl.sum(col_block * col_block, axis=0)
         in_block_ptr = tl.advance(in_block_ptr, (0, block_size))
 
-        col_offsets = start_col + tl.arange(0, block_size)
+        '''col_offsets = start_col + tl.arange(0, block_size)
         col_mask = col_offsets < num_cols
         col_block = tl.load(in_ptr_row + col_offsets, mask = col_mask, other=0.0).to(tl.float32)
         variance += tl.sum(col_block * col_block, axis=0) 
-        
+        '''
         # Load the current block
         
         #tl.device_print("col_block load ", col_block, col_block_2)
