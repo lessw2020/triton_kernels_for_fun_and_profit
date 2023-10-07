@@ -7,7 +7,7 @@ import torch.nn as nn
 from torch import Tensor
 import sys
 sys.path.append('..')
-from kernels.rms_norm_block_bug import triton_rmsnorm
+from kernels.rms_norm import triton_rmsnorm
 
 from test_utils import assert_expected, set_rng_seed, gpu_test
 

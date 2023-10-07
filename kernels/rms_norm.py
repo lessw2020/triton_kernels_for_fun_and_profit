@@ -31,9 +31,9 @@ def _fwd_rms_kernel(
     in_ptr_row = in_ptr_base + (row_index * stride_x_row)
     out_ptr_row = out_ptr_base + (row_index * stride_out_row)
 
-    # Create block pointers for input 
-    in_block_ptr = tl.make_block_ptr(base=in_ptr_base, shape=(num_rows, num_cols), strides=(stride_x_row, stride_x_col),
-                                     offsets=(row_index, 0), block_shape=(1, block_size), order=(1, 0))
+    # Create block pointers for input - waiting for compiler bug fix
+    #in_block_ptr = tl.make_block_ptr(base=in_ptr_base, shape=(num_rows, num_cols), strides=(stride_x_row, stride_x_col),
+    #                                 offsets=(row_index, 0), block_shape=(1, block_size), order=(1, 0))
     
 
     # internal variables
@@ -42,37 +42,22 @@ def _fwd_rms_kernel(
 
     # rms_x = norm_x * d_x ** (-1. / 2)
     # x_normed = x / (rms_x + self.eps)
-    #tl.device_print("block size ", block_size)
-    #tl.device_print("num_cols ", num_cols)
-    for col_index in range(0, block_size//num_cols): # , block_size=128, num_cols=128):
+    
+    for col_index in range(0, num_cols, block_size): 
         # col block 0.069104, 1.188494, -0.996045, 0.199789
-        col_block = tl.load(in_block_ptr, boundary_check=(0, 1)).to(tl.float32)
-        variance += tl.sum(col_block * col_block, axis=0)
-        in_block_ptr = tl.advance(in_block_ptr, (0, block_size))
+        #col_block = tl.load(in_block_ptr, boundary_check=(0, 1)).to(tl.float32)
+        #variance += tl.sum(col_block * col_block, axis=0)
+        #in_block_ptr = tl.advance(in_block_ptr, (0, block_size))
 
-        col_offsets = start_col + tl.arange(0, block_size)
+        col_offsets = col_index + tl.arange(0, block_size)
         col_mask = col_offsets < num_cols
         col_block = tl.load(in_ptr_row + col_offsets, mask = col_mask, other=0.0).to(tl.float32)
+        
         variance += tl.sum(col_block * col_block, axis=0) 
         
-        # Load the current block
-        
-        #tl.device_print("col_block load ", col_block, col_block_2)
-        #.to(tl.float32)
-        #
-        #tl.device_print("variance ", variance, variance_sum)
-        #tl.device_print("variance2 ", variance2)
-        
-
-    #tl.device_print("variance: ", variance)
-    #tl.device_print("variance 2 ", variance2)
-    #variance2 /= num_cols
-    #rstdev2 = 1/ tl.sqrt(variance2 + eps)
-
+    # complete the rms calcs
     variance /= num_cols
     rstdev = 1/ tl.sqrt(variance + eps)
-
-    #tl.device_print("rst ", rstdev, rstdev2)
 
     
     for start_col in range(0,num_cols, block_size):
