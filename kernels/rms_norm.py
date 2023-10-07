@@ -21,6 +21,7 @@ def _fwd_rms_kernel(
     stride_x_row,
     stride_x_col, 
     weight_ptr,
+    rstd,
     num_rows: tl.constexpr,
     num_cols: tl.constexpr,
     block_size: tl.constexpr,
@@ -59,6 +60,8 @@ def _fwd_rms_kernel(
     variance /= num_cols
     rstdev = 1/ tl.sqrt(variance + eps)
 
+    tl.store(rstd+row_index, rstdev )
+
     
     for start_col in range(0,num_cols, block_size):
         col_offsets = start_col + tl.arange(0, block_size)
@@ -77,9 +80,23 @@ def _fwd_rms_kernel(
 
 @triton.jit
 def _rms_kernel_bwd_dx(
-
+    dact,
+    dout,
+    in_ptr,
+    stride_input_row,
+    weight,
+    nrows,
+    ncols,
+    block_size_cols: tl.constexpr,
+    
 ): 
-    pass
+    row = tl.program_id(0)
+    stride_to_row = row * stride_input_row
+    input_row_ptr = in_ptr + stride_to_row
+
+    dact_row_ptr = dact + stride_to_row
+    dout_row_ptr = dout + stride_to_row
+
 
 @triton.jit
 def _rms_kernel_bwd_dwdb():
@@ -101,7 +118,7 @@ class TritonRMSNorm(torch.autograd.Function):
 
 
         out = torch.ones_like(x)
-
+        rstd = torch.empty((nrows,), dtype=torch.float32, device="cuda")
         # block sizing - credit Kernl
 
         kb_64 = 65536 
@@ -126,13 +143,14 @@ class TritonRMSNorm(torch.autograd.Function):
             stride_x_row=x.stride(0),
             stride_x_col = x.stride(1),
             weight_ptr=weight,
+            rstd=rstd,
             num_rows = nrows,
             num_cols = ncols,
             block_size=block_size,
             num_warps=num_warps,
         )
 
-        ctx.save_for_backward(x, weight)
+        ctx.save_for_backward(x, weight, rstd)
         ctx.block_size = block_size
         ctx.num_warps = num_warps
 
@@ -156,8 +174,8 @@ class TritonRMSNorm(torch.autograd.Function):
             dact,
             dout,
             x,
-            weight,
             x.stride(0),
+            weight,
             nrows,
             ncols,
             block_size_cols=ctx.block_size,
