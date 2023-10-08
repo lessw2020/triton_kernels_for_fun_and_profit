@@ -83,11 +83,12 @@ def _fwd_rms_kernel(
 
 @triton.jit
 def _rms_kernel_bwd_dx(
-    dact,
-    dout,
+    dact_ptr,
+    dout_ptr,
     in_ptr,
     stride_input_row,
-    weight,
+    weight_ptr,
+    rstdev,
     nrows,
     ncols,
     block_size_cols: tl.constexpr,
@@ -95,14 +96,29 @@ def _rms_kernel_bwd_dx(
 ): 
     row = tl.program_id(0)
     stride_to_row = row * stride_input_row
-    input_row_ptr = in_ptr + stride_to_row
 
-    dact_row_ptr = dact + stride_to_row
-    dout_row_ptr = dout + stride_to_row
+    input_row_ptr = in_ptr + stride_to_row
+    dact_row_ptr = dact_ptr + stride_to_row
+    dout_row_ptr = dout_ptr + stride_to_row
+
+    rstdev = tl.load(rstdev + row)
+
+    for offset in range(0, ncols, block_size_cols):
+        cols = offset + tl.arange(0, block_size_cols)
+        mask = cols < ncols
+
+        input = tl.load(input_row_ptr + cols, mask=mask, other=0.0,).to(tl.float32)
+        weight = tl.load(weight_ptr + cols, mask=mask, other=0.0,).to(tl.float32)
+        dout = tl.load(dout_row_ptr, mask=mask, other=0.0,).to(tl.float32)
+
+        input_pred = input * rstdev
+        wdout = weight * dout
+        dact = wdout * rstdev  # TODO verify this
+        tl.store(dact_ptr, dact, mask=mask)
 
 
 @triton.jit
-def _rms_kernel_bwd_dwdb():
+def _rms_kernel_bwd_dw():
     pass
 
 class TritonRMSNorm(torch.autograd.Function):
@@ -121,7 +137,7 @@ class TritonRMSNorm(torch.autograd.Function):
 
 
         out = torch.ones_like(x)
-        rstd = torch.empty((nrows,), dtype=torch.float32, device="cuda")
+        rstdev = torch.empty((nrows,), dtype=torch.float32, device="cuda")
         # block sizing - credit Kernl
 
         kb_64 = 65536 
@@ -146,14 +162,14 @@ class TritonRMSNorm(torch.autograd.Function):
             stride_x_row=x.stride(0),
             stride_x_col = x.stride(1),
             weight_ptr=weight,
-            rstd=rstd,
+            rstd=rstdev,
             num_rows = nrows,
             num_cols = ncols,
             block_size=block_size,
             num_warps=num_warps,
         )
 
-        ctx.save_for_backward(x, weight, rstd)
+        ctx.save_for_backward(x, weight, rstdev)
         ctx.block_size = block_size
         ctx.num_warps = num_warps
 
@@ -163,7 +179,7 @@ class TritonRMSNorm(torch.autograd.Function):
     def backward(ctx, dout,):
         assert dout.is_contiguous()
         
-        x, weight = ctx.saved_tensors
+        x, weight, rstdev = ctx.saved_tensors
         dact = torch.empty_like(dout)
         orig_shape = x.shape
         x = x.view(-1, orig_shape[-1])
@@ -179,6 +195,7 @@ class TritonRMSNorm(torch.autograd.Function):
             x,
             x.stride(0),
             weight,
+            rstdev,
             nrows,
             ncols,
             block_size_cols=ctx.block_size,
@@ -196,7 +213,7 @@ class TritonRMSNorm(torch.autograd.Function):
 
         grid = lambda meta: [triton.cdiv(ncols, meta["block_size_col"])]
 
-        _rms_kernel_bwd_dwdb[grid](
+        _rms_kernel_bwd_dw[grid](
             x,
             dout,
             dweight,
