@@ -62,6 +62,8 @@ def _fwd_rms_kernel(
 
     tl.store(rstd+row_index, rstdev )
 
+    #in_block_ptr = tl.make_block_ptr(base=in_ptr_base, shape=(num_rows, num_cols), strides=(stride_x_row, stride_x_col),
+    #                                 offsets=(row_index, 0), block_shape=(1,block_size), order=(0,1))# 0))
     
     for start_col in range(0,num_cols, block_size):
         col_offsets = start_col + tl.arange(0, block_size)
@@ -69,11 +71,11 @@ def _fwd_rms_kernel(
         col_mask = col_offsets < num_cols
         weights = tl.load(weight_ptr + col_offsets, mask = col_mask)
         
-        in_block = tl.load(in_block_ptr_offset, boundary_check=(0, 1), eviction_policy='evict_first')
-        #in_block = tl.load(in_ptr_row + col_offsets, mask=col_mask, other=0.0, eviction_policy='evict_first').to(tl.float32)
+        #in_block = tl.load(in_block_ptr, boundary_check=(0, 1), eviction_policy='evict_first')
+        in_block = tl.load(in_ptr_row + col_offsets, mask=col_mask, other=0.0, eviction_policy='evict_first').to(tl.float32)
         col_block_rms = in_block * rstdev
         out = weights * col_block_rms
-        in_block_ptr = tl.advance(in_block_ptr, (0, start_col))
+        # in_block_ptr = tl.advance(in_block_ptr, (0, block_size))
 
         # write to HBM
         tl.store(out_ptr_row + col_offsets, out, mask = col_mask)
