@@ -37,24 +37,28 @@ def _fwd_rms_kernel(
     
 
     # internal variables
-    variance = 0.0
+    variance_row = 0.0
     eps=1e-8  # per RMSNorm official repo
-
+    test = tl.zeros([5], dtype=tl.float32)
+    summer = 0.0
+    variance=0.0
     # rms_x = norm_x * d_x ** (-1. / 2)
     # x_normed = x / (rms_x + self.eps)
     #tl.device_print("block size ", block_size)
     #tl.device_print("num_cols ", num_cols)
     for col_index in range(0, block_size//num_cols): # , block_size=128, num_cols=128):
         # col block 0.069104, 1.188494, -0.996045, 0.199789
-        col_block = tl.load(in_block_ptr, boundary_check=(0, 1)).to(tl.float32)
-        variance += tl.sum(col_block * col_block, axis=0)
+        col_block = tl.load(in_block_ptr[0], boundary_check=(0, 1)).to(tl.float32)
+        #col_block1 = col_block[0]
+        variance += tl.sum(col_block * col_block, axis=0) # , axis=0)
         in_block_ptr = tl.advance(in_block_ptr, (0, block_size))
+        #summer += tl.sum(test, axis=0)
 
-        '''col_offsets = start_col + tl.arange(0, block_size)
+        col_offsets = col_index + tl.arange(0, block_size)
         col_mask = col_offsets < num_cols
-        col_block = tl.load(in_ptr_row + col_offsets, mask = col_mask, other=0.0).to(tl.float32)
-        variance += tl.sum(col_block * col_block, axis=0) 
-        '''
+        col_block2 = tl.load(in_ptr_row + col_offsets, mask = col_mask, other=0.0).to(tl.float32)
+        variance_row += tl.sum(col_block2 * col_block2, axis=0) 
+        
         # Load the current block
         
         #tl.device_print("col_block load ", col_block, col_block_2)
@@ -64,7 +68,7 @@ def _fwd_rms_kernel(
         #tl.device_print("variance2 ", variance2)
         
 
-    #tl.device_print("variance: ", variance)
+    tl.device_print("summer, variance: ", summer, variance)
     #tl.device_print("variance 2 ", variance2)
     #variance2 /= num_cols
     #rstdev2 = 1/ tl.sqrt(variance2 + eps)

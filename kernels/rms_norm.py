@@ -32,9 +32,9 @@ def _fwd_rms_kernel(
     in_ptr_row = in_ptr_base + (row_index * stride_x_row)
     out_ptr_row = out_ptr_base + (row_index * stride_out_row)
 
-    # Create block pointers for input - waiting for compiler bug fix
-    #in_block_ptr = tl.make_block_ptr(base=in_ptr_base, shape=(num_rows, num_cols), strides=(stride_x_row, stride_x_col),
-    #                                 offsets=(row_index, 0), block_shape=(1, block_size), order=(1, 0))
+    # Create block pointers for input 
+    in_block_ptr = tl.make_block_ptr(base=in_ptr_base, shape=(num_rows, num_cols), strides=(stride_x_row, stride_x_col),
+                                     offsets=(row_index, 0), block_shape=(1, block_size), order=(1, 0))
     
 
     # internal variables
@@ -46,15 +46,15 @@ def _fwd_rms_kernel(
     
     for col_index in range(0, num_cols, block_size): 
         # col block 0.069104, 1.188494, -0.996045, 0.199789
-        #col_block = tl.load(in_block_ptr, boundary_check=(0, 1)).to(tl.float32)
-        #variance += tl.sum(col_block * col_block, axis=0)
-        #in_block_ptr = tl.advance(in_block_ptr, (0, block_size))
+        col_block = tl.load(in_block_ptr, boundary_check=(0, 1)).to(tl.float32)
+        variance += tl.sum(col_block * col_block, axis=None)
+        in_block_ptr = tl.advance(in_block_ptr, (0, block_size))
 
-        col_offsets = col_index + tl.arange(0, block_size)
-        col_mask = col_offsets < num_cols
-        col_block = tl.load(in_ptr_row + col_offsets, mask = col_mask, other=0.0).to(tl.float32)
+        #col_offsets = col_index + tl.arange(0, block_size)
+        #col_mask = col_offsets < num_cols
+        #col_block = tl.load(in_ptr_row + col_offsets, mask = col_mask, other=0.0).to(tl.float32)
         
-        variance += tl.sum(col_block * col_block, axis=0) 
+        #variance += tl.sum(col_block * col_block, axis=0) 
         
     # complete the rms calcs
     variance /= num_cols
@@ -68,11 +68,12 @@ def _fwd_rms_kernel(
         #print("col offsets", col_offsets)
         col_mask = col_offsets < num_cols
         weights = tl.load(weight_ptr + col_offsets, mask = col_mask)
-        #in_block_ptr_offset = tl.advance(in_block_ptr, (0, start_col))
-        #in_block = tl.load(in_block_ptr_offset, boundary_check=(0, 1), eviction_policy='evict_first')
-        in_block = tl.load(in_ptr_row + col_offsets, mask=col_mask, other=0.0, eviction_policy='evict_first').to(tl.float32)
+        
+        in_block = tl.load(in_block_ptr_offset, boundary_check=(0, 1), eviction_policy='evict_first')
+        #in_block = tl.load(in_ptr_row + col_offsets, mask=col_mask, other=0.0, eviction_policy='evict_first').to(tl.float32)
         col_block_rms = in_block * rstdev
         out = weights * col_block_rms
+        in_block_ptr = tl.advance(in_block_ptr, (0, start_col))
 
         # write to HBM
         tl.store(out_ptr_row + col_offsets, out, mask = col_mask)
