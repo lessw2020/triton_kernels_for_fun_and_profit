@@ -45,7 +45,7 @@ import time
 class TestRMSNorm:
     @pytest.fixture
     def N(self,):
-        return 2048 # 16384 # 8192
+        return 128 # 16384 # 8192
     
     #@gpu_test
     def test_triton_vs_pytorch_accuracy(self, N):
@@ -53,7 +53,7 @@ class TestRMSNorm:
         layer_weight_size = (N,N)
         layer_weight = torch.ones(layer_weight_size, requires_grad=False, device="cuda", dtype=torch.float32)
 
-        sample_x = torch.randn(layer_weight_size, dtype=torch.float32, device='cuda', requires_grad=False)
+        sample_x = torch.randn(layer_weight_size, dtype=torch.float32, device='cuda', requires_grad=True)
 
         expected_rms_func = TorchMM_RMSNorm(layer_weight_size).to('cuda')
         start = time.perf_counter()
@@ -78,6 +78,29 @@ class TestRMSNorm:
         print(f"Timing: {triton_time=}, {native_rms_time=}, faster = {(triton_time-native_rms_time)/native_rms_time*-100}")
 
         assert_expected(triton_out[0:5000,...], expected_rms[0:5000,...], rtol=.01, atol=.0001)
+
+        dy = .2 * torch.randn_like(sample_x)
+
+
+        expected_rms.backward(dy, retain_graph=True)
+        dx_ref = [_.grad.clone() for _ in [sample_x,]]# layer_weight]]
+        sample_x.grad, layer_weight.grad  = None, None 
+
+        # tensors casting
+        '''layer_weight = layer_weight.to(dtype).detach().requires_grad_(True)
+        layer_bias = layer_bias.to(dtype).detach().requires_grad_(True)
+        x = x.to(dtype).detach().requires_grad_(True)
+        dy = dy.to(dtype)
+        '''
+        triton_out.backward(dy, retain_graph=True)
+        #dx_triton = sample_x.grad.clone()
+        #sample_x.grad, layer_weight.grad  = None, None 
+
+
+        #assert_expected(dx_triton, dx_ref, atol=1e-1)
+    
+
+
 
 
 

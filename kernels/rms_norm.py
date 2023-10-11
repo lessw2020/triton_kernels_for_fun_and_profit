@@ -50,9 +50,9 @@ def _fwd_rms_kernel(
         variance += tl.sum(col_block * col_block, axis=None)
         in_block_ptr = tl.advance(in_block_ptr, (0, block_size))
 
-        #col_offsets = col_index + tl.arange(0, block_size)
-        #col_mask = col_offsets < num_cols
-        #col_block = tl.load(in_ptr_row + col_offsets, mask = col_mask, other=0.0).to(tl.float32)
+        # col_offsets = col_index + tl.arange(0, block_size)
+        # col_mask = col_offsets < num_cols
+        # col_block = tl.load(in_ptr_row + col_offsets, mask = col_mask, other=0.0).to(tl.float32)
         
         #variance += tl.sum(col_block * col_block, axis=0) 
         
@@ -109,11 +109,11 @@ def _rms_kernel_bwd_dx(
 
         input = tl.load(input_row_ptr + cols, mask=mask, other=0.0,).to(tl.float32)
         weight = tl.load(weight_ptr + cols, mask=mask, other=0.0,).to(tl.float32)
-        dout = tl.load(dout_row_ptr, mask=mask, other=0.0,).to(tl.float32)
+        dout = tl.load(dout_row_ptr + cols, mask=mask, other=0.0,).to(tl.float32)
 
         input_pred = input * rstdev
         wdout = weight * dout
-        dact = wdout * rstdev  # TODO verify this
+        dact = (wdout - input_pred)* rstdev  # TODO verify this
         tl.store(dact_ptr, dact, mask=mask)
 
 
@@ -206,11 +206,14 @@ class TritonRMSNorm(torch.autograd.Function):
         
         x, weight, rstdev = ctx.saved_tensors
         dact = torch.empty_like(dout)
+        print(f"{dact.shape=}")
         orig_shape = x.shape
         x = x.view(-1, orig_shape[-1])
         
         nrows, ncols = x.shape
+        print(f"{nrows=}, {ncols=}")
         
+        return None, None
         dweight = torch.empty((weight.shape[0],), dtype=weight.dtype, device=weight.device)
         grid = (nrows,)
 

@@ -210,7 +210,7 @@ class _attention(torch.autograd.Function):
         Lq, Lk, Lv = q.shape[-1], k.shape[-1], v.shape[-1]
         assert Lk in {16,32,64,128}
         assert Lq == Lk and Lk==Lv
-
+        print(f"{q=}, {k=}, {v=}")
         out = torch.empty_like(q)
 
         block_m = 128
@@ -219,7 +219,7 @@ class _attention(torch.autograd.Function):
         num_warps = 4
 
         grid_rows = (triton.cdiv(q.shape[2], block_m),)
-        print("grid rows", grid_rows[0][0])
+        #print("grid rows", grid_rows[0][0])
         # b, nh, seq_len, hdim
         # 4, 12
         # example: 1024 seq_len / 128 = 8 blocks
@@ -260,83 +260,5 @@ class _attention(torch.autograd.Function):
 
 attention = _attention.apply
 
-import time
-def perf_timer(func):
-    def wrapper(*args, **kwargs):
-        start = time.perf_counter()
-        output=func(*args, **kwargs)
-        elapsed_time = time.perf_counter() - start
-        print(elapsed_time)
-        return output, elapsed_time
-    return wrapper
-
-@perf_timer
-def mha_compute(_func, q, k, v, causal, sm_scale, attn_mask = None, is_sdpa=False):
-    
-    if is_sdpa:
-        res = _func(q,k,v, attn_mask=attn_mask, is_causal=causal, scale=sm_scale)
-    else:
-        res = _func(q,k,v, causal, sm_scale)
-    return res
-
-import math
-from torch.nn.functional import scaled_dot_product_attention as sdpa
-seq_len = 16
-z,h,n_ctx,d_head = (1,1, seq_len, 16)
-
-q = torch.randn((z,h,n_ctx, d_head), dtype=torch.bfloat16, device='cuda')
-k = torch.randn_like(q) # ((z,h,n_ctx, d_head),device='cuda')
-v = torch.randn_like(k) # ((z,h,n_ctx, d_head),device='cuda')
-torch.manual_seed(2020)
-q1 = torch.randn((z,h,n_ctx, d_head), dtype=torch.bfloat16, device='cuda')
-k1 = torch.randn_like(q) # ((z,h,n_ctx, d_head),device='cuda')
-v1 = torch.randn_like(k) # ((z,h,n_ctx, d_head),device='cuda')
-
-mask = torch.ones((seq_len, seq_len), dtype=torch.bfloat16, device='cuda')
-mask *=500
-
-torch.backends.cuda.enable_flash_sdp(False) # : Enables or Disables FlashAttention.
-
-torch.backends.cuda.enable_mem_efficient_sdp(True) # : Enables or Disables Memory-Efficient Attention.
-
-
-causal=True
-sm_scale = 1.0 # math.sqrt(k.shape[-1]) # 0.5
-# warmup
-triton_out, triton_time = mha_compute(attention, q,k,v, causal, sm_scale)
-# actual
-triton_out, triton_time = mha_compute(attention, q1,k1,v1, causal, sm_scale)
-print(f"{triton_out.dtype=}")
-use_manual = False
-if use_manual:
-
-    M = torch.tril(torch.ones((n_ctx, n_ctx), device="cuda"))
-    p = torch.matmul(q, k.transpose(2, 3)) * sm_scale
-    if causal:
-        p[:, :, M == 0] = float("-inf")
-
-    p = torch.softmax(p.float(), dim=-1)# .half()
-    print(f"{p.dtype=}")
-        # p = torch.exp(p)
-    ref_out = torch.matmul(p.to(torch.bfloat16), v)
-# warmup
-causal=False
-sdpa_out, sdpa_time = mha_compute(sdpa, q,k,v, causal, sm_scale, mask, is_sdpa=True)
-# actual
-sdpa_out, sdpa_time = mha_compute(sdpa, q1,k1,v1, causal, sm_scale, mask, is_sdpa=True)
-print(f"{sdpa_out.dtype=}")
-print(f"timing compare: {triton_time=}, {sdpa_time=}")
-
-print(f"verifying output vs reference:")
-print(f"{sdpa_out[0][0][0][10:20]=}")
-print(f"{triton_out[0][0][0][10:20]=}")
-
-distance_bias_matrix = -torch.abs(
-            torch.arange(0,10) - torch.arange(0,10)[:,None]
-        )
-print(f"{distance_bias_matrix[0:10]=}")
-
-#torch.testing.assert_close(res, sdpa_out,atol=1e-1, rtol=0)
-#torch.testing.assert_close(ref_out, sdpa_out,atol=1e-1, rtol=0)
 
 

@@ -6,7 +6,16 @@ import pytest
 import torch
 import torch.distributed as dist
 from torch import Tensor, nn
+import time
 
+def perf_timer(func):
+    def wrapper(*args, **kwargs):
+        start = time.perf_counter()
+        output=func(*args, **kwargs)
+        elapsed_time = time.perf_counter() - start
+        print(elapsed_time)
+        return output, elapsed_time
+    return wrapper
 
 def assert_expected(
     actual: Any,

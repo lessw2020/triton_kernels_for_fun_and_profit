@@ -45,7 +45,7 @@ import time
 class TestRMSNorm:
     @pytest.fixture
     def N(self,):
-        return 128 # 16384 # 8192
+        return 4096 # 16384 # 8192
     
     #@gpu_test
     def test_triton_vs_pytorch_accuracy(self, N):
@@ -78,6 +78,8 @@ class TestRMSNorm:
         print(f"Timing: {triton_time=}, {native_rms_time=}, faster = {(triton_time-native_rms_time)/native_rms_time*-100}")
 
         assert_expected(triton_out[0:5000,...], expected_rms[0:5000,...], rtol=.01, atol=.0001)
+
+        #dy = .2 * torch.randn_like(sample_x)
 
 
 
