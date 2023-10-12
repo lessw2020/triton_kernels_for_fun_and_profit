@@ -35,10 +35,12 @@ def _attn_fwd_inner(
     if stage==1:
         low= 0
         high = start_m * block_m
+        
     else:
         low = start_m * block_m
         high = (start_m+1) * block_m
         low = tl.multiple_of(low, block_m) # compiler opt
+        
     
     K_block_ptr = tl.advance(K_block_ptr, (0,low))
     V_block_ptr = tl.advance(V_block_ptr, (low,0))
@@ -49,30 +51,43 @@ def _attn_fwd_inner(
         # qk
         k = tl.load(K_block_ptr)
         qk = tl.zeros([block_m, block_n], dtype=tl.float32)
-        alibi = tl.zeros([block_m, block_n], dtype=tl.float32)*am*999
-        distance_bias_matrix = -tl.abs(
-            tl.arange(0,block_m) - tl.arange(0,block_m)[:,None]
-        )
         
-        # print("block m, block n", block_m, block_n)
+        
+        # tl.device_print("block m, block n", block_m, block_n)
         qk += tl.dot(q,k)
-        #print(f"{qk.shape=}")
-        if stage==2:
+        # offs_m = 0 - 128
+        #low, high = 0, 128
+        if stage==2:   # 256 times 
             mask = offs_m[:,None] >= (start_n + offs_n[None,:])
+            
+
+            alibi = tl.zeros([block_m, block_n], dtype=tl.float32, ones=False)
+            #print("alibi ", alibi)
+
+            #distance_bias_matrix = -tl.abs(
+            #    tl.arange(0,block_m) - tl.arange(0,block_m)[:,None]
+            #)
+            # print("qk ", qk)
             #print(mask[0])
             #print(f"{mask.shape=}")
             # qk += am
             #print("am", am)
             #am*=999
             #qk = qk * qk_scale + tl.where(mask, 0, -1.0e6)
-            qk += alibi # tl.where(mask, am, 0)
-            qk = qk * qk_scale #+ tl.where(mask, 0, -1.0e6)
+            
+            qk = qk * qk_scale 
+            #print("after qk ", qk)
+            #print("qk before ", qk)
+            #qk += alibi # tl.where(mask, am, 0)
+            qk += tl.where(mask, 0, -1.0e6)
+            #print("qk after alibi ", qk)
 
             m_ij = tl.maximum(m_i, tl.max(qk,axis=1))
             qk -= m_ij[:,None]
         else:
             m_ij = tl.maximum(m_i, tl.max(qk,axis=1) * qk_scale)
             qk = qk * qk_scale - m_ij[:,None]
+            
         probs = tl.math.exp2(qk)
         l_ij = tl.sum(probs, axis=1)
 
@@ -210,7 +225,7 @@ class _attention(torch.autograd.Function):
         Lq, Lk, Lv = q.shape[-1], k.shape[-1], v.shape[-1]
         assert Lk in {16,32,64,128}
         assert Lq == Lk and Lk==Lv
-        print(f"{q=}, {k=}, {v=}")
+        # print(f"{q=}, {k=}, {v=}")
         out = torch.empty_like(q)
 
         block_m = 128

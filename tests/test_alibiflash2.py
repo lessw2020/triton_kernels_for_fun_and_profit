@@ -49,8 +49,8 @@ class TestAlibiFlash2:
         v1 = torch.randn_like(k) # ((z,h,n_ctx, d_head),device='cuda')
 
         mask = torch.ones((seq_len, seq_len), dtype=torch.bfloat16, device='cuda')
-        mask *=500
-
+        mask *=500.0
+        #mask=None
         torch.backends.cuda.enable_flash_sdp(False) # : Enables or Disables FlashAttention.
 
         torch.backends.cuda.enable_mem_efficient_sdp(True) # : Enables or Disables Memory-Efficient Attention.
@@ -59,39 +59,43 @@ class TestAlibiFlash2:
         causal=True
         sm_scale = 1.0 # math.sqrt(k.shape[-1]) # 0.5
         # warmup
-        triton_out, triton_time = mha_compute(alibi_attention, q,k,v, causal, sm_scale)
+        #triton_out, triton_time = mha_compute(alibi_attention, q,k,v, causal, sm_scale)
         # actual
         triton_out, triton_time = mha_compute(alibi_attention, q1,k1,v1, causal, sm_scale)
         print(f"{triton_out.dtype=}")
         
-        use_manual = False
+        use_manual = True
         if use_manual:
             M = torch.tril(torch.ones((n_ctx, n_ctx), device="cuda"))
             p = torch.matmul(q, k.transpose(2, 3)) * sm_scale
+            print(f"{p=}")
             if causal:
                 p[:, :, M == 0] = float("-inf")
-
-            p = torch.softmax(p.float(), dim=-1)# .half()
+            if mask is not None:
+                p+= mask
+                print(f"{p=}")
+            p = torch.softmax(p, dim=-1)# .half()
             print(f"{p.dtype=}")
                 # p = torch.exp(p)
             ref_out = torch.matmul(p.to(torch.bfloat16), v)
         # warmup
-        causal=False
-        sdpa_out, sdpa_time = mha_compute(sdpa, q,k,v, causal, sm_scale, mask, is_sdpa=True)
+        causal=True
+        #sdpa_out, sdpa_time = mha_compute(sdpa, q,k,v, causal, sm_scale, mask, is_sdpa=True)
         # actual
         sdpa_out, sdpa_time = mha_compute(sdpa, q1,k1,v1, causal, sm_scale, mask, is_sdpa=True)
         print(f"{sdpa_out.dtype=}")
         print(f"timing compare: {triton_time=}, {sdpa_time=}")
 
         print(f"verifying output vs reference:")
-        print(f"{sdpa_out[0][0][0][10:20]=}")
-        print(f"{triton_out[0][0][0][10:20]=}")
+        print(f"{sdpa_out[0][0][1][10:20]=}")
+        print(f"{triton_out[0][0][1][10:20]=}")
+        print(f"{ref_out[0][0][1][10:20]=}")
 
         #distance_bias_matrix = -torch.abs(
         #            torch.arange(0,10) - torch.arange(0,10)[:,None]
             #       )
         #print(f"{distance_bias_matrix[0:10]=}")
-
-        #torch.testing.assert_close(res, sdpa_out,atol=1e-1, rtol=0)
+        print(f"*** testing triton vs sdpa...")
+        torch.testing.assert_close(triton_out, sdpa_out,atol=1e-2, rtol=0)
         #torch.testing.assert_close(ref_out, sdpa_out,atol=1e-1, rtol=0)
 
