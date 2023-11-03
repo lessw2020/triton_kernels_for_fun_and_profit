@@ -146,7 +146,7 @@ def _rms_kernel_bwd_dw(
     tl.store(dweight_ptr, sum_dw, mask = cols < block_size_col)
 
 
-class TritonRMSNorm(torch.autograd.Function):
+class TritonRMSNorm2(torch.autograd.Function):
     @staticmethod
     def forward(
         ctx: FunctionCtx,
@@ -174,7 +174,7 @@ class TritonRMSNorm(torch.autograd.Function):
         block_size = max(block_size, min_block_size)
         block_size = min(block_size, max_block_size)
 
-        print(f"Using block size {block_size=}")
+        # print(f"Using block size {block_size=}")
 
         base_warps = max(block_size // 256, 1)
         num_warps = min(base_warps, 8)
@@ -262,5 +262,5 @@ def triton_rmsnorm(
         weight: Tensor,
         
 ):
-    return TritonRMSNorm.apply(x, weight,)
+    return TritonRMSNorm2.apply(x, weight,)
 
