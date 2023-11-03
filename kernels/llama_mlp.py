@@ -105,8 +105,8 @@ def triton_llama_mlp(x: torch.Tensor, lin1: torch.Tensor, lin2: torch.Tensor, rm
                             *out.stride(),
                             *rms_wts.stride(),
                             eps=1e-6,
-                            block_size_m=16,
-                            block_size_n=16,
+                            block_size_m=32,
+                            block_size_n=32,
                             block_size_k=64,
                             num_stages = 2,
                             num_warps=4,)

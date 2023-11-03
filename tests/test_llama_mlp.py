@@ -54,7 +54,7 @@ class TestFusedMLP:
         return 4096 # 16384 # 8192
     @pytest.fixture
     def lin_layer(self,):
-        return 11008
+        return 16384
     
     #@gpu_test
     def test_triton_vs_pytorch_accuracy(self, N, lin_layer):
